@@ -1,0 +1,7 @@
+﻿@OdooBackend_HostAddress = http://localhost:5230
+
+GET {{OdooBackend_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
+
