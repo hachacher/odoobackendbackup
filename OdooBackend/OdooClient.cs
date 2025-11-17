@@ -170,7 +170,7 @@ namespace OdooBackend
                                     }
                                     break;
                                 case "percentage": // This is for 'Discount' in UI
-                                    if (rule.ContainsKey("price_discount") && decimal.TryParse(rule["price_discount"]?.ToString(), out var discountPercent))
+                                    if (rule.ContainsKey("percent_price") && decimal.TryParse(rule["percent_price"]?.ToString(), out var discountPercent))
                                     {
                                         item.DiscountedPrice = listPrice * (1 - (discountPercent / 100m));
                                     }

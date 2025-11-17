@@ -20,11 +20,8 @@ builder.Services.AddHttpClient<OdooService>(client =>
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+app.UseSwagger();
+app.UseSwaggerUI();
 
 var odooService = app.Services.GetRequiredService<OdooService>();
 await odooService.InitializeAsync();
