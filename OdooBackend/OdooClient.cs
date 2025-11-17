@@ -69,11 +69,15 @@ namespace OdooBackend
 
                 if (result.Length == 0 || result[0] is not XmlRpcStruct product) return null;
 
+                // Capture original (list) price and expose discounted separately
+                var originalPrice = product.ContainsKey("list_price") ? Convert.ToDecimal(product["list_price"]) : (decimal?)null;
+
                 var item = new OdooItem
                 {
                     ItemNumber = product.ContainsKey("default_code") ? product["default_code"]?.ToString() : null,
                     Name = product.ContainsKey("name") ? product["name"]?.ToString() : null,
-                    Price = product.ContainsKey("list_price") ? Convert.ToDecimal(product["list_price"]) : null,
+                    OriginalPrice = originalPrice,
+                    DiscountedPrice = null, // will fill if we find a valid pricelist rule
                     Variants = new List<string>()
                 };
 
@@ -91,20 +95,25 @@ namespace OdooBackend
 
                     if (productId > 0 || productTemplateId > 0)
                     {
-                        // Prefer variant-specific rule (applied_on = '0_product_variant'), fallback to template rule
-                        // First search variant-specific
-                        // Domain: (company_id is global OR company_id = companyId) AND applied_on='0_product_variant' AND product_id=productId
-                        // In prefix form: ['&','&','|', cond1, cond2, cond3, cond4]
+                        string today = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
+
+                        // Date validity domain (flattened)
+                        // (date_start is null or <= today) AND (date_end is null or >= today)
+                        // Equivalent to: (| (date_start = false) (date_start <= today)) AND (| (date_end = false) (date_end >= today))
+                        var priceFields = new object[] { "compute_price", "fixed_price", "percent_price", "price_discount", "min_quantity", "applied_on", "date_start", "date_end" };
+                        var priceKwargs = new { fields = priceFields, limit = 1, order = "min_quantity desc" };
+
+                        // Domain for variant-specific search (flattened)
                         var priceDomainVariant = new object[] {
-                            "&", "&", "|",
-                            new object[] { "company_id", "=", false },
-                            new object[] { "company_id", "=", companyId.Value },
+                            "&", "&", "&", "&",
+                            "|", new object[] { "company_id", "=", false }, new object[] { "company_id", "=", companyId.Value },
                             new object[] { "applied_on", "=", "0_product_variant" },
-                            new object[] { "product_id", "=", productId }
+                            new object[] { "product_id", "=", productId },
+                            "|", new object[] { "date_start", "=", false }, new object[] { "date_start", "<=", today },
+                            "|", new object[] { "date_end", "=", false }, new object[] { "date_end", ">=", today }
                         };
-                        var priceFields = new object[] { "compute_price", "fixed_price", "percent_price", "min_quantity", "applied_on" };
-                        var priceKwargsVariant = new { fields = priceFields, limit = 1, order = "min_quantity desc" };
-                        var variantRuleResult = objects.SearchRead(_db, uid, _password, "product.pricelist.item", "search_read", new object[] { priceDomainVariant }, priceKwargsVariant);
+
+                        var variantRuleResult = objects.SearchRead(_db, uid, _password, "product.pricelist.item", "search_read", new object[] { priceDomainVariant }, priceKwargs);
 
                         XmlRpcStruct? rule = null;
                         if (variantRuleResult.Length > 0 && variantRuleResult[0] is XmlRpcStruct vr)
@@ -113,35 +122,47 @@ namespace OdooBackend
                         }
                         else if (productTemplateId > 0)
                         {
-                            // Fallback to template rule (applied_on = '1_product')
-                            // Template fallback domain
+                            // Fallback to template rule (flattened)
                             var priceDomainTemplate = new object[] {
-                                "&", "&", "|",
-                                new object[] { "company_id", "=", false },
-                                new object[] { "company_id", "=", companyId.Value },
+                                "&", "&", "&", "&",
+                                "|", new object[] { "company_id", "=", false }, new object[] { "company_id", "=", companyId.Value },
                                 new object[] { "applied_on", "=", "1_product" },
-                                new object[] { "product_tmpl_id", "=", productTemplateId }
+                                new object[] { "product_tmpl_id", "=", productTemplateId },
+                                "|", new object[] { "date_start", "=", false }, new object[] { "date_start", "<=", today },
+                                "|", new object[] { "date_end", "=", false }, new object[] { "date_end", ">=", today }
                             };
-                            var priceKwargsTemplate = new { fields = priceFields, limit = 1, order = "min_quantity desc" };
-                            var templateRuleResult = objects.SearchRead(_db, uid, _password, "product.pricelist.item", "search_read", new object[] { priceDomainTemplate }, priceKwargsTemplate);
+                            var templateRuleResult = objects.SearchRead(_db, uid, _password, "product.pricelist.item", "search_read", new object[] { priceDomainTemplate }, priceKwargs);
                             if (templateRuleResult.Length > 0 && templateRuleResult[0] is XmlRpcStruct tr)
                             {
                                 rule = tr;
                             }
                         }
 
-                        if (rule != null && item.Price.HasValue)
+                        if (rule != null && item.OriginalPrice.HasValue)
                         {
                             var computeMode = rule.ContainsKey("compute_price") ? rule["compute_price"]?.ToString() : null;
-                            if (computeMode == "fixed" && rule.ContainsKey("fixed_price") && decimal.TryParse(rule["fixed_price"]?.ToString(), out var fixedPrice))
+                            decimal listPrice = item.OriginalPrice.Value;
+
+                            switch (computeMode)
                             {
-                                item.Price = fixedPrice;
-                            }
-                            else if (computeMode == "percentage" && rule.ContainsKey("percent_price") && decimal.TryParse(rule["percent_price"]?.ToString(), out var percent))
-                            {
-                                // percentage discount off list_price in Odoo (list_price - list_price * percent/100)
-                                var listPrice = item.Price.Value;
-                                item.Price = listPrice - (listPrice * percent / 100m);
+                                case "fixed":
+                                    if (rule.ContainsKey("fixed_price") && decimal.TryParse(rule["fixed_price"]?.ToString(), out var fixedPrice))
+                                    {
+                                        item.DiscountedPrice = fixedPrice;
+                                    }
+                                    break;
+                                case "percentage": // This is for 'Discount' in UI
+                                    if (rule.ContainsKey("price_discount") && decimal.TryParse(rule["price_discount"]?.ToString(), out var discountPercent))
+                                    {
+                                        item.DiscountedPrice = listPrice * (1 - (discountPercent / 100m));
+                                    }
+                                    break;
+                                case "formula":
+                                    // Formula evaluation is complex and requires a safe expression evaluator.
+                                    // For now, we will not calculate the price but acknowledge it.
+                                    // A full implementation would need to parse the formula and have access to variables like `product`, `user`, etc.
+                                    Console.WriteLine("Formula-based pricelist item found, but calculation is not implemented.");
+                                    break;
                             }
                         }
                     }
