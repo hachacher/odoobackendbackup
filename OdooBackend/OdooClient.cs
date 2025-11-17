@@ -60,7 +60,7 @@ namespace OdooBackend
 
                 // 2) Find product by barcode with company context
                 var domain = new object[] { new object[] { "barcode", "=", barcode } };
-                var fields = new object[] { "id", "default_code", "name", "list_price", "product_template_attribute_value_ids", "product_tmpl_id" };
+                var fields = new object[] { "id", "default_code", "name", "list_price", "product_template_attribute_value_ids", "product_tmpl_id", "currency_id", "categ_id", "family_id" };
                 var context = new { allowed_company_ids = new int[] { companyId.Value }, company_id = companyId.Value };
                 var kwargs = new { fields = fields, limit = 1, context = context };
 
@@ -71,6 +71,21 @@ namespace OdooBackend
 
                 // Capture original (list) price and expose discounted separately
                 var originalPrice = product.ContainsKey("list_price") ? Convert.ToDecimal(product["list_price"]) : (decimal?)null;
+                string? currency = null;
+                if (product.ContainsKey("currency_id") && product["currency_id"] is object[] currencyInfo && currencyInfo.Length > 1)
+                {
+                    currency = currencyInfo[1]?.ToString();
+                }
+                string? productCategory = null;
+                if (product.ContainsKey("categ_id") && product["categ_id"] is object[] categoryInfo && categoryInfo.Length > 1)
+                {
+                    productCategory = categoryInfo[1]?.ToString();
+                }
+                string? productFamily = null;
+                if (product.ContainsKey("family_id") && product["family_id"] is object[] familyInfo && familyInfo.Length > 1)
+                {
+                    productFamily = familyInfo[1]?.ToString();
+                }
 
                 var item = new OdooItem
                 {
@@ -78,6 +93,9 @@ namespace OdooBackend
                     Name = product.ContainsKey("name") ? product["name"]?.ToString() : null,
                     OriginalPrice = originalPrice,
                     DiscountedPrice = null, // will fill if we find a valid pricelist rule
+                    Currency = currency,
+                    ProductCategory = productCategory,
+                    ProductFamily = productFamily,
                     Variants = new List<string>()
                 };
 
